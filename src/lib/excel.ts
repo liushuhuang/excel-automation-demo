@@ -4,6 +4,18 @@ import { sampleOrderRows } from './sampleData';
 
 type HeaderKey = keyof RawOrderRow;
 
+const currencyFormatter = new Intl.NumberFormat('zh-CN', {
+  style: 'currency',
+  currency: 'CNY',
+  maximumFractionDigits: 0
+});
+
+const percentFormatter = new Intl.NumberFormat('zh-CN', {
+  style: 'percent',
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1
+});
+
 const headerAliases: Record<string, HeaderKey> = {
   订单号: 'orderId',
   orderId: 'orderId',
@@ -65,10 +77,11 @@ export function downloadSampleWorkbook(): void {
 export function createReportWorkbook(report: ReportResult): XLSX.WorkBook {
   const workbook = XLSX.utils.book_new();
 
+  XLSX.utils.book_append_sheet(workbook, createAnalysisOverviewSheet(report), '分析总览');
   XLSX.utils.book_append_sheet(
     workbook,
-    XLSX.utils.json_to_sheet(report.cleanedRows.map(toCleanedSheetRow)),
-    '清洗后明细'
+    XLSX.utils.aoa_to_sheet([['老板周报'], [report.weeklyNarrative]]),
+    '老板周报'
   );
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(toSummaryRows(report)), '销售汇总');
   XLSX.utils.book_append_sheet(
@@ -83,6 +96,11 @@ export function createReportWorkbook(report: ReportResult): XLSX.WorkBook {
   );
   XLSX.utils.book_append_sheet(
     workbook,
+    XLSX.utils.json_to_sheet(report.anomalies.map(toAnomalySheetRow)),
+    '异常订单'
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
     XLSX.utils.json_to_sheet(report.customerRanking.map(toRankingSheetRow)),
     '客户排行'
   );
@@ -93,13 +111,8 @@ export function createReportWorkbook(report: ReportResult): XLSX.WorkBook {
   );
   XLSX.utils.book_append_sheet(
     workbook,
-    XLSX.utils.json_to_sheet(report.anomalies.map(toAnomalySheetRow)),
-    '异常订单'
-  );
-  XLSX.utils.book_append_sheet(
-    workbook,
-    XLSX.utils.aoa_to_sheet([['老板周报'], [report.weeklyNarrative]]),
-    '老板周报'
+    XLSX.utils.json_to_sheet(report.cleanedRows.map(toCleanedSheetRow)),
+    '清洗后明细'
   );
 
   return workbook;
@@ -133,6 +146,68 @@ function toChineseOrderRow(row: RawOrderRow) {
   };
 }
 
+function createAnalysisOverviewSheet(report: ReportResult): XLSX.WorkSheet {
+  const topProducts = report.productRanking.slice(0, 5);
+  const topChannels = report.channelRanking.slice(0, 5);
+  const anomalySummary = toAnomalySummaryRows(report.anomalies);
+  const rows: Array<Array<string | number>> = [
+    ['Excel 自动报表分析总览'],
+    ['生成时间', new Date().toLocaleString('zh-CN')],
+    [],
+    ['老板周报'],
+    [report.weeklyNarrative],
+    [],
+    ['关键指标', '数值', '说明'],
+    ['总订单数', report.summary.totalOrders, '导入后参与统计的订单行数'],
+    ['有效订单数', report.summary.validOrders, '排除明显业务异常后的订单数'],
+    ['净销售额', formatCurrency(report.summary.netSales), '销售金额 - 退款金额'],
+    ['估算毛利', formatCurrency(report.summary.grossProfit), '销售金额 - 退款金额 - 成本'],
+    ['客单价', formatCurrency(report.summary.averageOrderValue), '总销售额 / 有效订单数'],
+    ['退款率', formatPercent(report.summary.refundRate), '退款金额 / 销售金额'],
+    [],
+    ['Top 商品', '净销售额', '订单数', '销售占比'],
+    ...topProducts.map((item) => [item.name, formatCurrency(item.netSales), item.orderCount, formatPercent(item.share)]),
+    [],
+    ['Top 渠道', '净销售额', '订单数', '销售占比'],
+    ...topChannels.map((item) => [item.name, formatCurrency(item.netSales), item.orderCount, formatPercent(item.share)]),
+    [],
+    ['异常订单摘要', '数量', '建议'],
+    ...anomalySummary
+  ];
+
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet['!cols'] = [{ wch: 24 }, { wch: 24 }, { wch: 28 }, { wch: 16 }];
+  return sheet;
+}
+
+function toAnomalySummaryRows(anomalies: ReportAnomaly[]): Array<[string, number, string]> {
+  if (anomalies.length === 0) {
+    return [['暂无异常', 0, '可以直接进入复盘和结算']];
+  }
+
+  const counts = new Map<string, number>();
+  anomalies.forEach((item) => counts.set(item.type, (counts.get(item.type) ?? 0) + 1));
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([type, count]) => [type, count, toAnomalySuggestion(type)]);
+}
+
+function toAnomalySuggestion(type: string): string {
+  const suggestions: Record<string, string> = {
+    重复订单号: '核对是否重复导出或重复录入',
+    日期格式异常: '统一日期格式后重新生成报表',
+    缺少商品名称: '补齐商品名称，否则商品排行会失真',
+    缺少销售渠道: '补齐渠道，否则渠道分析会失真',
+    销售金额为空或为0: '核对是否为测试单、赠品或录入错误',
+    退款金额大于销售金额: '核对退款记录和订单金额是否匹配',
+    缺少订单号: '补齐订单号，便于对账和去重'
+  };
+
+  return suggestions[type] ?? '核对原始订单数据';
+}
+
 function toCleanedSheetRow(row: CleanOrderRow) {
   return {
     行号: row.rowNumber,
@@ -148,6 +223,14 @@ function toCleanedSheetRow(row: CleanOrderRow) {
     估算毛利: row.grossProfit,
     负责人: row.owner
   };
+}
+
+function formatCurrency(value: number): string {
+  return currencyFormatter.format(value);
+}
+
+function formatPercent(value: number): string {
+  return percentFormatter.format(value);
 }
 
 function toSummaryRows(report: ReportResult) {

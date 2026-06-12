@@ -55,6 +55,23 @@ describe('Excel helpers', () => {
     expect(JSON.stringify(narrativeRows)).toContain(report.weeklyNarrative);
   });
 
+  it('places a business analysis overview before cleaned raw rows', () => {
+    const report = buildReport(sampleOrderRows);
+
+    const workbook = createReportWorkbook(report);
+    expect(workbook.SheetNames[0]).toBe('分析总览');
+    expect(workbook.SheetNames.indexOf('清洗后明细')).toBeGreaterThan(workbook.SheetNames.indexOf('异常订单'));
+
+    const overviewRows = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets['分析总览'], { header: 1, blankrows: false });
+    const overviewText = JSON.stringify(overviewRows);
+
+    expect(overviewText).toContain('老板周报');
+    expect(overviewText).toContain('关键指标');
+    expect(overviewText).toContain('Top 商品');
+    expect(overviewText).toContain(report.productRanking[0].name);
+    expect(overviewText).toContain('异常订单摘要');
+  });
+
   it('provides sample rows with enough volume and anomalies for a sales demo', () => {
     const report = buildReport(sampleOrderRows);
 
